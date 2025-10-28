@@ -1,0 +1,6 @@
+ccxt
+pandas
+matplotlib
+mplfinance
+ta
+python-telegram-bot==20.3

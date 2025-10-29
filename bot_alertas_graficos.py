@@ -207,4 +207,8 @@ def iniciar_flask():
 if __name__ == "__main__":
     threading.Thread(target=iniciar_flask).start()
     asyncio.run(main())
+if __name__ == "__main__":
+    threading.Thread(target=iniciar_flask).start()
+    asyncio.run(main())
+
 

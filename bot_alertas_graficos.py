@@ -26,12 +26,13 @@ print("🔄 Usando API pública de Coinbase (sin clave privada).")
 def obtener_datos(crypto, timeframe="15m", limit=200):
     """Obtiene datos OHLC de Coinbase usando API pública."""
     try:
-        exchange = ccxt.coinbase()
+        # ✅ CORRECCIÓN AQUÍ
+        exchange = ccxt.coinbase({
             'enableRateLimit': True
         })
         # Coinbase utiliza '-' en lugar de '/' para algunos pares
         symbol = crypto.replace("/", "-")
-        ohlc = coinbase.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+        ohlc = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
         df = pd.DataFrame(ohlc, columns=["timestamp", "open", "high", "low", "close", "volume"])
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
         df.set_index("timestamp", inplace=True)
@@ -143,5 +144,6 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 

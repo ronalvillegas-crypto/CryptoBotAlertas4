@@ -8,8 +8,8 @@ from ta.momentum import RSIIndicator
 from telegram import Bot
 
 # --- Variables de entorno ---
-API_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = int(os.getenv("TELEGRAM_CHAT_ID"))
+API_TOKEN = os.getenv("7901741145:AAFPr0wLmKVDkHV30_clU9eGcX8doi8mjQQ")
+CHAT_ID = int(os.getenv("1347933429"))
 
 if not API_TOKEN or not CHAT_ID:
     raise ValueError("Faltan TELEGRAM_TOKEN o TELEGRAM_CHAT_ID en variables de entorno.")

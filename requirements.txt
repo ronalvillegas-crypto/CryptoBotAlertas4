@@ -1,6 +1,7 @@
-ccxt
-pandas
-matplotlib
-mplfinance
-ta
-python-telegram-bot==20.3
+flask==3.0.3
+python-telegram-bot==20.7
+ccxt==4.3.82
+pandas==2.2.2
+matplotlib==3.9.2
+mplfinance==0.12.10b0
+ta==0.11.0

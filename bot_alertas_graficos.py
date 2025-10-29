@@ -24,13 +24,28 @@ if not API_TOKEN:
 
 bot = Bot(token=API_TOKEN)
 print("✅ Configuración correcta de variables de entorno.")
-print("🔄 Usando API pública de Kraken (sin clave privada).")  # 👈 Cambio aquí
+print("🔄 Usando API pública de Kraken (sin clave privada).")
+
+# --- Función de verificación de conexión ---
+def verificar_conexion_kraken():
+    """Verifica si la API pública de Kraken responde correctamente."""
+    try:
+        exchange = ccxt.kraken({'enableRateLimit': True})
+        markets = exchange.load_markets()
+        if "BTC/USDT" in markets:
+            print("✅ Kraken responde correctamente. Conexión establecida.")
+            return True
+        else:
+            print("⚠️ Kraken responde pero BTC/USDT no está disponible.")
+            return False
+    except Exception as e:
+        print(f"❌ No se pudo conectar con Kraken: {e}")
+        return False
 
 # --- Funciones principales ---
 def obtener_datos(crypto, timeframe="15m", limit=200):
     """Obtiene datos OHLC de Kraken usando API pública."""
     try:
-        # 👇 Cambio de Bybit a Kraken
         exchange = ccxt.kraken({'enableRateLimit': True})
         ohlc = exchange.fetch_ohlcv(crypto, timeframe=timeframe, limit=limit)
         df = pd.DataFrame(ohlc, columns=["timestamp", "open", "high", "low", "close", "volume"])
@@ -162,10 +177,7 @@ async def enviar_alerta(crypto, df, ultimo, soporte, resistencia):
 
 async def revisar_cryptos():
     """Revisa criptos y genera alertas."""
-    cryptos = [
-        "BTC/USDT", "ETH/USDT", "SOL/USDT", "ADA/USDT",
-        "DOT/USDT", "LINK/USDT", "LTC/USDT"
-    ]
+    cryptos = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "ADA/USDT", "DOT/USDT", "LINK/USDT", "LTC/USDT"]
     for crypto in cryptos:
         try:
             df = obtener_datos(crypto)
@@ -185,8 +197,14 @@ async def heartbeat():
 
 async def main():
     """Bucle principal del bot."""
+    if not verificar_conexion_kraken():
+        print("🚫 No se pudo conectar con Kraken. El bot no se iniciará.")
+        async with bot:
+            await bot.send_message(chat_id=CHAT_ID, text="🚫 Error: Kraken no está accesible desde Render. Bot detenido.")
+        return
+
     async with bot:
-        await bot.send_message(chat_id=CHAT_ID, text="✅ Bot avanzado Kraken con señales de triple y doble confirmación iniciado.")
+        await bot.send_message(chat_id=CHAT_ID, text="✅ Bot con Kraken iniciado correctamente.")
         asyncio.create_task(heartbeat())
         while True:
             await revisar_cryptos()
@@ -206,6 +224,7 @@ def iniciar_flask():
 if __name__ == "__main__":
     threading.Thread(target=iniciar_flask).start()
     asyncio.run(main())
+
 
 
 

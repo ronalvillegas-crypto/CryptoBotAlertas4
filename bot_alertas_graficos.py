@@ -8,25 +8,23 @@ from ta.momentum import RSIIndicator
 from telegram import Bot
 
 # --- Variables de entorno ---
-API_TOKEN = os.getenv("7901741145:AAFPr0wLmKVDkHV30_clU9eGcX8doi8mjQQ")
-import os
-CHAT_ID = int(os.getenv("TELEGRAM_CHAT_ID"))  # Nombre correcto de la variable
-print("Chat ID:", CHAT_ID)
+API_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID_ENV = os.getenv("TELEGRAM_CHAT_ID")
 
-if chat_id_env is None:
-    raise ValueError("❌ La variable de entorno TELEGRAM_CHAT_ID no está configurada")
-CHAT_ID = int(chat_id_env)
+if not API_TOKEN or not CHAT_ID_ENV:
+    raise ValueError("❌ Faltan TELEGRAM_TOKEN o TELEGRAM_CHAT_ID en variables de entorno.")
 
-
-if not API_TOKEN or not CHAT_ID:
-    raise ValueError("Faltan TELEGRAM_TOKEN o TELEGRAM_CHAT_ID en variables de entorno.")
+try:
+    CHAT_ID = int(CHAT_ID_ENV)
+except ValueError:
+    raise ValueError("❌ TELEGRAM_CHAT_ID debe ser un número válido.")
 
 bot = Bot(token=API_TOKEN)
 
 # --- Funciones ---
 def obtener_datos(crypto, timeframe="15m", limit=200):
     try:
-        binance = ccxt.binance()
+        binance = ccxt.binance()  # API pública, no necesita keys
         ohlc = binance.fetch_ohlcv(crypto, timeframe=timeframe, limit=limit)
         df = pd.DataFrame(ohlc, columns=["timestamp", "open", "high", "low", "close", "volume"])
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
@@ -43,11 +41,11 @@ def calcular_indicadores(df):
     df['MA200'] = df['close'].rolling(200).mean()
     rsi_indicator = RSIIndicator(df['close'], window=14)
     df['RSI'] = rsi_indicator.rsi()
-    soporte = df['low'].min() if not df.empty else None
-    resistencia = df['high'].max() if not df.empty else None
+    soporte = df['low'].min()
+    resistencia = df['high'].max()
     return df, soporte, resistencia
 
-def generar_grafico(df, crypto, soporte, resistencia, puntos=50):
+def generar_grafico(df, crypto, puntos=50):
     if df.empty:
         return None, None
     df = df.tail(puntos)
@@ -59,7 +57,6 @@ def generar_grafico(df, crypto, soporte, resistencia, puntos=50):
     )
     
     archivo = f"{crypto.replace('/', '')}_grafico.png"
-    
     addplots = []
     if df['MA50'].notna().any():
         addplots.append(mpf.make_addplot(df['MA50'], color='skyblue'))
@@ -91,7 +88,7 @@ async def enviar_alerta(crypto, df, ultimo, soporte, resistencia, rsi):
     
     margen = 0.025  # 2.5%
     if abs(ultimo - soporte)/soporte < margen or abs(ultimo - resistencia)/resistencia < margen:
-        archivo, archivo_rsi = generar_grafico(df, crypto, soporte, resistencia)
+        archivo, archivo_rsi = generar_grafico(df, crypto)
         texto = (f"📊 {crypto}\nPrecio: {ultimo:.2f}\nRSI: {rsi:.2f}\n"
                  f"Soporte: {soporte:.2f}\nResistencia: {resistencia:.2f}")
         try:
@@ -104,7 +101,6 @@ async def enviar_alerta(crypto, df, ultimo, soporte, resistencia, rsi):
             print(f"❌ Error al enviar alerta de {crypto}: {e}")
 
 async def revisar_cryptos():
-    # 10 principales criptos por capitalización
     cryptos = ["BTC/USDT", "ETH/USDT", "BNB/USDT", "XRP/USDT", 
                "ADA/USDT", "SOL/USDT", "DOGE/USDT", "DOT/USDT", 
                "LTC/USDT", "LINK/USDT"]
@@ -129,5 +125,6 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 

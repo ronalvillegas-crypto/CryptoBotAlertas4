@@ -1,7 +1,7 @@
-flask==3.0.3
-python-telegram-bot==20.7
-ccxt==4.3.82
-pandas==2.2.2
+ccxt==4.3.83
+pandas==2.2.3
 matplotlib==3.9.2
 mplfinance==0.12.10b0
+python-telegram-bot==21.6
 ta==0.11.0
+Flask==3.0.3

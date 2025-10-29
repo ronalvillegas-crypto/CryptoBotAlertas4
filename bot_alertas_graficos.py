@@ -9,7 +9,11 @@ from telegram import Bot
 
 # --- Variables de entorno ---
 API_TOKEN = os.getenv("7901741145:AAFPr0wLmKVDkHV30_clU9eGcX8doi8mjQQ")
-CHAT_ID = int(os.getenv("1347933429"))
+chat_id_env = os.getenv("1347933429")
+if chat_id_env is None:
+    raise ValueError("❌ La variable de entorno TELEGRAM_CHAT_ID no está configurada")
+CHAT_ID = int(chat_id_env)
+
 
 if not API_TOKEN or not CHAT_ID:
     raise ValueError("Faltan TELEGRAM_TOKEN o TELEGRAM_CHAT_ID en variables de entorno.")

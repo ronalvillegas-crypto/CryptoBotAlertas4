@@ -24,40 +24,34 @@ if not API_TOKEN:
 
 bot = Bot(token=API_TOKEN)
 print("✅ Configuración correcta de variables de entorno.")
-print("🔄 Usando API pública de Kraken (sin clave privada).")
+print("🔄 Usando API pública con fallback (Kraken → Coinbase → KuCoin).")
 
-# --- Función de verificación de conexión ---
-def verificar_conexion_kraken():
-    """Verifica si la API pública de Kraken responde correctamente."""
-    try:
-        exchange = ccxt.kraken({'enableRateLimit': True})
-        markets = exchange.load_markets()
-        if "BTC/USDT" in markets:
-            print("✅ Kraken responde correctamente. Conexión establecida.")
-            return True
-        else:
-            print("⚠️ Kraken responde pero BTC/USDT no está disponible.")
-            return False
-    except Exception as e:
-        print(f"❌ No se pudo conectar con Kraken: {e}")
-        return False
-
-# --- Funciones principales ---
+# --- Función con failover ---
 def obtener_datos(crypto, timeframe="15m", limit=200):
-    """Obtiene datos OHLC de Kraken usando API pública."""
-    try:
-        exchange = ccxt.kraken({'enableRateLimit': True})
-        ohlc = exchange.fetch_ohlcv(crypto, timeframe=timeframe, limit=limit)
-        df = pd.DataFrame(ohlc, columns=["timestamp", "open", "high", "low", "close", "volume"])
-        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-        df.set_index("timestamp", inplace=True)
-        return df
-    except Exception as e:
-        print(f"❌ Error al obtener datos de {crypto}: {e}")
-        return pd.DataFrame()
+    """Obtiene datos OHLC de varios exchanges con fallback automático."""
+    exchanges = [
+        ("Kraken", ccxt.kraken({'enableRateLimit': True})),
+        ("Coinbase", ccxt.coinbaseexchange({'enableRateLimit': True})),
+        ("KuCoin", ccxt.kucoin({'enableRateLimit': True}))
+    ]
+    
+    for nombre, exchange in exchanges:
+        try:
+            print(f"🔄 Intentando obtener datos de {crypto} desde {nombre}...")
+            ohlc = exchange.fetch_ohlcv(crypto, timeframe=timeframe, limit=limit)
+            df = pd.DataFrame(ohlc, columns=["timestamp", "open", "high", "low", "close", "volume"])
+            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+            df.set_index("timestamp", inplace=True)
+            print(f"✅ Datos obtenidos correctamente desde {nombre}")
+            return df
+        except Exception as e:
+            print(f"⚠️ Falló {nombre}: {e}")
 
+    print(f"❌ No se pudieron obtener datos de {crypto} en ningún exchange.")
+    return pd.DataFrame()
+
+# --- Indicadores técnicos ---
 def calcular_indicadores(df):
-    """Calcula indicadores técnicos avanzados."""
     if df.empty:
         return df, None, None
 
@@ -77,8 +71,8 @@ def calcular_indicadores(df):
     resistencia = df['high'].max()
     return df, soporte, resistencia
 
+# --- Generación de gráficos ---
 def generar_grafico(df, crypto, soporte, resistencia, puntos=50):
-    """Genera gráficos de velas y RSI."""
     if df.empty:
         return None, None
     df = df.tail(puntos)
@@ -115,8 +109,8 @@ def generar_grafico(df, crypto, soporte, resistencia, puntos=50):
 
     return archivo, archivo_rsi
 
+# --- Envío de alertas ---
 async def enviar_alerta(crypto, df, ultimo, soporte, resistencia):
-    """Envía alerta a Telegram con niveles de confianza."""
     if df.empty or soporte is None or resistencia is None:
         return
 
@@ -175,9 +169,13 @@ async def enviar_alerta(crypto, df, ultimo, soporte, resistencia):
         except Exception as e:
             print(f"❌ Error al enviar alerta de {crypto}: {e}")
 
+# --- Revisión cíclica ---
 async def revisar_cryptos():
-    """Revisa criptos y genera alertas."""
-    cryptos = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "ADA/USDT", "DOT/USDT", "LINK/USDT", "LTC/USDT"]
+    cryptos = [
+        "BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT",
+        "XRP/USDT", "ADA/USDT", "DOGE/USDT", "DOT/USDT",
+        "LTC/USDT", "LINK/USDT"
+    ]
     for crypto in cryptos:
         try:
             df = obtener_datos(crypto)
@@ -189,33 +187,27 @@ async def revisar_cryptos():
         except Exception as e:
             print(f"❌ Error con {crypto}: {e}")
 
+# --- Heartbeat ---
 async def heartbeat():
-    """Mensaje periódico para mantener Render activo."""
     while True:
         print("💓 Bot activo y ejecutándose...")
         await asyncio.sleep(60)
 
+# --- Ciclo principal ---
 async def main():
-    """Bucle principal del bot."""
-    if not verificar_conexion_kraken():
-        print("🚫 No se pudo conectar con Kraken. El bot no se iniciará.")
-        async with bot:
-            await bot.send_message(chat_id=CHAT_ID, text="🚫 Error: Kraken no está accesible desde Render. Bot detenido.")
-        return
-
     async with bot:
-        await bot.send_message(chat_id=CHAT_ID, text="✅ Bot con Kraken iniciado correctamente.")
+        await bot.send_message(chat_id=CHAT_ID, text="✅ Bot avanzado con failover Kraken → Coinbase → KuCoin iniciado correctamente.")
         asyncio.create_task(heartbeat())
         while True:
             await revisar_cryptos()
-            await asyncio.sleep(900)  # cada 15 min
+            await asyncio.sleep(900)  # cada 15 minutos
 
 # --- Servidor Flask ---
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "🤖 Bot de alertas cripto con Kraken activo y funcionando."
+    return "🤖 Bot de alertas cripto con fallback activo y funcionando."
 
 def iniciar_flask():
     port = int(os.environ.get("PORT", 10000))
@@ -224,6 +216,7 @@ def iniciar_flask():
 if __name__ == "__main__":
     threading.Thread(target=iniciar_flask).start()
     asyncio.run(main())
+
 
 
 

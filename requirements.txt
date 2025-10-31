@@ -1,0 +1,7 @@
+ccxt
+pandas
+matplotlib
+mplfinance
+python-telegram-bot
+ta
+Flask

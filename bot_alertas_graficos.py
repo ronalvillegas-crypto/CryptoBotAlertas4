@@ -1,168 +1,102 @@
 import os
-import asyncio
-import threading
-import ccxt
+import time
+import requests
 import pandas as pd
-import matplotlib.pyplot as plt
-import mplfinance as mpf
-from ta.trend import EMAIndicator
-from ta.momentum import RSIIndicator
-from ta.trend import MACD
-from telegram import Bot
-from flask import Flask
 from datetime import datetime
 
-# === Configuración de entorno ===
-API_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID_ENV = os.getenv("TELEGRAM_CHAT_ID")
+# ==============================
+# CONFIGURACIÓN INICIAL
+# ==============================
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-if CHAT_ID_ENV is None:
-    raise ValueError("❌ La variable de entorno TELEGRAM_CHAT_ID no está configurada")
-CHAT_ID = int(CHAT_ID_ENV)
+if not TELEGRAM_CHAT_ID or not TELEGRAM_TOKEN:
+    raise ValueError("❌ Las variables de entorno TELEGRAM_TOKEN y TELEGRAM_CHAT_ID no están configuradas")
 
-if not API_TOKEN:
-    raise ValueError("❌ Falta la variable de entorno TELEGRAM_TOKEN")
+# Criptomonedas principales
+CRYPTOS = ["BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "DOT", "LTC", "LINK"]
+PAIRS = [f"{crypto}/USDT" for crypto in CRYPTOS]
 
-bot = Bot(token=API_TOKEN)
-print("✅ Configuración correcta de variables de entorno.")
-print("🔄 Usando API pública con fallback (Kraken → Coinbase → KuCoin).")
+INTERVALOS = {
+    "1h": 60,
+    "4h": 240,
+    "1d": 1440
+}
 
-# === Función de datos con fallback ===
-def obtener_datos(crypto, timeframe="1h", limit=200):
-    exchanges = [
-        ("Kraken", ccxt.kraken({'enableRateLimit': True})),
-        ("Coinbase", ccxt.coinbaseexchange({'enableRateLimit': True})),
-        ("KuCoin", ccxt.kucoin({'enableRateLimit': True}))
-    ]
-    for nombre, exchange in exchanges:
-        try:
-            print(f"🔄 Obteniendo {crypto} ({timeframe}) desde {nombre}...")
-            ohlc = exchange.fetch_ohlcv(crypto, timeframe=timeframe, limit=limit)
-            df = pd.DataFrame(ohlc, columns=["timestamp", "open", "high", "low", "close", "volume"])
-            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-            df.set_index("timestamp", inplace=True)
-            print(f"✅ Datos obtenidos desde {nombre}")
-            return df
-        except Exception as e:
-            print(f"⚠️ Falló {nombre}: {e}")
-    return pd.DataFrame()
+# ==============================
+# FUNCIONES AUXILIARES
+# ==============================
 
-# === Cálculo de indicadores ===
-def calcular_indicadores(df):
-    if df.empty:
-        return df, None, None
-    df["EMA20"] = EMAIndicator(df["close"], window=20).ema_indicator()
-    df["EMA50"] = EMAIndicator(df["close"], window=50).ema_indicator()
-    df["RSI"] = RSIIndicator(df["close"], window=14).rsi()
-    macd = MACD(df["close"])
-    df["MACD"] = macd.macd()
-    df["MACD_signal"] = macd.macd_signal()
-    soporte = df["low"].min()
-    resistencia = df["high"].max()
-    return df, soporte, resistencia
+def enviar_telegram(mensaje):
+    """Envía mensaje a Telegram."""
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    data = {"chat_id": TELEGRAM_CHAT_ID, "text": mensaje, "parse_mode": "HTML"}
+    try:
+        requests.post(url, data=data)
+    except Exception as e:
+        print(f"⚠️ Error al enviar mensaje Telegram: {e}")
 
-# === Generar gráficos ===
-def generar_grafico(df, crypto):
-    df = df.tail(50)
-    archivo = f"{crypto.replace('/', '')}_grafico.png"
-    estilo = mpf.make_mpf_style(base_mpf_style='yahoo', rc={'font.size': 8})
-    addplots = [
-        mpf.make_addplot(df["EMA20"], color="blue"),
-        mpf.make_addplot(df["EMA50"], color="orange")
-    ]
-    mpf.plot(df, type="candle", addplot=addplots, style=estilo,
-             title=f"{crypto}", ylabel="Precio", savefig=archivo, tight_layout=True)
-    return archivo
 
-# === Envío de alertas ===
-async def enviar_alerta(crypto, timeframe, df, ultimo, soporte, resistencia):
-    margen = 0.02  # 2%
-    rango_soporte = soporte * (1 + margen)
-    rango_resistencia = resistencia * (1 - margen)
+def obtener_datos_kraken(par, intervalo):
+    """Obtiene datos OHLC desde Kraken."""
+    try:
+        symbol = par.replace("/", "")
+        url = f"https://api.kraken.com/0/public/OHLC?pair={symbol}&interval={INTERVALOS[intervalo]}"
+        r = requests.get(url, timeout=10).json()
+        result_key = list(r["result"].keys())[0]
+        data = pd.DataFrame(r["result"][result_key], columns=["time","open","high","low","close","v","v2"])
+        data["close"] = data["close"].astype(float)
+        data["high"] = data["high"].astype(float)
+        data["low"] = data["low"].astype(float)
+        return data
+    except Exception:
+        return None
 
-    tocar_soporte = ultimo <= rango_soporte
-    tocar_resistencia = ultimo >= rango_resistencia
 
-    if tocar_soporte or tocar_resistencia:
-        tipo = "🟢 TOCÓ SOPORTE" if tocar_soporte else "🔴 TOCÓ RESISTENCIA"
-        archivo = generar_grafico(df, crypto)
-        texto = (
-            f"{tipo}\n"
-            f"⏱ {timeframe}\n"
-            f"📊 {crypto}\n"
-            f"💰 Precio: {ultimo:.2f}\n"
-            f"💎 Soporte: {soporte:.2f}\n"
-            f"📈 Resistencia: {resistencia:.2f}"
-        )
+def calcular_niveles(df):
+    """Calcula niveles de soporte y resistencia."""
+    maximo = df["high"].max()
+    minimo = df["low"].min()
+    return round(minimo, 2), round(maximo, 2)
 
-        # Guardar registro CSV
-        fecha = datetime.now().strftime("%Y-%m-%d")
-        archivo_csv = f"alertas_{fecha}.csv"
-        registro = pd.DataFrame([{
-            "fecha": datetime.now(),
-            "crypto": crypto,
-            "timeframe": timeframe,
-            "precio": ultimo,
-            "soporte": soporte,
-            "resistencia": resistencia,
-            "tipo": tipo
-        }])
-        registro.to_csv(archivo_csv, mode='a', header=not os.path.exists(archivo_csv), index=False)
 
-        try:
-            async with bot:
-                await bot.send_photo(chat_id=CHAT_ID, photo=open(archivo, 'rb'), caption=texto)
-        except Exception as e:
-            print(f"❌ Error al enviar alerta: {e}")
+def analizar_precio(par):
+    """Analiza el precio actual contra soportes y resistencias."""
+    for intervalo in INTERVALOS.keys():
+        df = obtener_datos_kraken(par, intervalo)
+        if df is None or df.empty:
+            continue
 
-# === Ciclo principal ===
-async def revisar_cryptos():
-    cryptos = [
-        "BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT",
-        "XRP/USDT", "ADA/USDT", "DOGE/USDT", "DOT/USDT",
-        "LTC/USDT", "LINK/USDT"
-    ]
-    timeframes = ["1h", "4h", "1d"]
+        soporte, resistencia = calcular_niveles(df)
+        precio_actual = df["close"].iloc[-1]
 
-    for crypto in cryptos:
-        for tf in timeframes:
-            try:
-                df = obtener_datos(crypto, timeframe=tf)
-                df, soporte, resistencia = calcular_indicadores(df)
-                if df.empty: 
-                    continue
-                ultimo = float(df["close"].iloc[-1])
-                await enviar_alerta(crypto, tf, df, ultimo, soporte, resistencia)
-            except Exception as e:
-                print(f"❌ Error con {crypto} ({tf}): {e}")
+        margen = 0.02  # 2%
+        zona_soporte = soporte * (1 + margen)
+        zona_resistencia = resistencia * (1 - margen)
 
-# === Heartbeat ===
-async def heartbeat():
+        if precio_actual <= zona_soporte:
+            enviar_telegram(f"🟢 <b>{par}</b> tocó el <b>soporte</b> ({intervalo}) en <b>{precio_actual:.2f}</b>.\n📉 Nivel: {soporte}")
+        elif precio_actual >= zona_resistencia:
+            enviar_telegram(f"🔴 <b>{par}</b> tocó la <b>resistencia</b> ({intervalo}) en <b>{precio_actual:.2f}</b>.\n📈 Nivel: {resistencia}")
+
+
+def iniciar_bot_alertas():
+    """Bucle principal del bot."""
+    enviar_telegram("🤖 Bot de alertas iniciado correctamente en Render ✅")
     while True:
-        print("💓 Bot activo...")
-        await asyncio.sleep(60)
+        print(f"\n⏰ {datetime.now().strftime('%H:%M:%S')} | Escaneando mercados...")
+        for par in PAIRS:
+            analizar_precio(par)
+            time.sleep(2)  # pausa corta entre pares
+        print("💓 Ciclo completado, esperando 15 minutos...")
+        time.sleep(900)  # espera 15 minutos antes de volver a analizar
 
-# === Main ===
-async def main():
-    async with bot:
-        await bot.send_message(chat_id=CHAT_ID, text="✅ Bot de soportes/resistencias iniciado correctamente.")
-        asyncio.create_task(heartbeat())
-        while True:
-            await revisar_cryptos()
-            await asyncio.sleep(900)
 
-# === Servidor Flask ===
-app = Flask(__name__)
-@app.route('/')
-def home():
-    return "🤖 Bot activo monitoreando soportes y resistencias (1h, 4h, 1d)."
-
-def iniciar_flask():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
-
+# ==============================
+# EJECUCIÓN
+# ==============================
 if __name__ == "__main__":
-    threading.Thread(target=iniciar_flask).start()
-    asyncio.run(main())
+    iniciar_bot_alertas()
+
 
 

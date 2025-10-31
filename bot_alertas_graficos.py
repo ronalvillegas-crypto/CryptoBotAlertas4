@@ -4,7 +4,7 @@ import requests
 import pandas as pd
 import numpy as np
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 # === CONFIGURACIÓN PRINCIPAL ===
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -17,9 +17,14 @@ PAIRS = ["BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT",
 # Timeframes a analizar
 TIMEFRAMES = {"1h": 60, "4h": 240, "1d": 1440}
 
-# Margen para alertas (2%)
+# Margen para alertas individuales (2%)
 ALERTA_MARGEN = 0.02
 
+# Margen para incluir en reporte diario (3%)
+REPORTE_MARGEN = 0.03
+
+# Hora local de reporte diario (6:30 AM Colombia/Venezuela)
+REPORTE_HORA = "06:30"
 
 # === FUNCIONES AUXILIARES ===
 
@@ -32,9 +37,8 @@ def enviar_telegram(mensaje):
     except Exception as e:
         print(f"Error enviando mensaje a Telegram: {e}")
 
-
 def obtener_datos_kraken(par):
-    """Obtiene datos OHLC desde Kraken."""
+    """Descarga velas desde Kraken."""
     base, quote = par.split('/')
     url = f"https://api.kraken.com/0/public/OHLC?pair={base}{quote}&interval=60"
     try:
@@ -48,22 +52,18 @@ def obtener_datos_kraken(par):
         df["low"] = df["low"].astype(float)
         return df
     except Exception as e:
-        print(f"Error obteniendo datos de {par} desde Kraken: {e}")
+        print(f"Error obteniendo datos de {par}: {e}")
         return None
 
-
 def calcular_niveles(df):
-    """Calcula niveles de soporte y resistencia."""
+    """Obtiene soporte, resistencia y rango de precios."""
     maximo = df["high"].max()
     minimo = df["low"].min()
     rango = maximo - minimo
-    resistencia = maximo
-    soporte = minimo
-    return soporte, resistencia, rango
-
+    return minimo, maximo, rango
 
 def analizar_moneda(par):
-    """Analiza cada par y envía alertas si toca soporte o resistencia."""
+    """Analiza un par en diferentes timeframes."""
     print(f"🔄 Analizando {par} ...")
     for tf, minutos in TIMEFRAMES.items():
         try:
@@ -71,7 +71,7 @@ def analizar_moneda(par):
             if df is None or len(df) == 0:
                 continue
 
-            soporte, resistencia, rango = calcular_niveles(df)
+            soporte, resistencia, _ = calcular_niveles(df)
             precio_actual = df["close"].iloc[-1]
 
             distancia_sup = abs(precio_actual - resistencia) / resistencia
@@ -79,66 +79,82 @@ def analizar_moneda(par):
 
             if distancia_sup <= ALERTA_MARGEN:
                 enviar_telegram(
-                    f"🚀 <b>{par}</b> está tocando resistencia ({tf}): "
+                    f"🚀 <b>{par}</b> tocando <b>resistencia</b> ({tf}): "
                     f"<b>{resistencia:.2f}</b>\n💰 Precio actual: {precio_actual:.2f}"
                 )
 
             if distancia_inf <= ALERTA_MARGEN:
                 enviar_telegram(
-                    f"⚡ <b>{par}</b> está tocando soporte ({tf}): "
+                    f"⚡ <b>{par}</b> tocando <b>soporte</b> ({tf}): "
                     f"<b>{soporte:.2f}</b>\n💰 Precio actual: {precio_actual:.2f}"
                 )
 
         except Exception as e:
-            print(f"❌ Error analizando {par} en {tf}: {e}")
+            print(f"❌ Error analizando {par}: {e}")
             traceback.print_exc()
+
+def generar_reporte_diario():
+    """Genera un reporte resumen con monedas cercanas a soporte o resistencia."""
+    cercanos_resistencia = []
+    cercanos_soporte = []
+
+    for par in PAIRS:
+        df = obtener_datos_kraken(par)
+        if df is None or len(df) == 0:
             continue
 
+        soporte, resistencia, _ = calcular_niveles(df)
+        precio_actual = df["close"].iloc[-1]
 
-def generar_resumen_diario():
-    """Envía un mensaje de resumen diario al canal."""
-    ahora = datetime.now(timezone.utc)
-    enviar_telegram(f"🗓️ <b>Resumen diario:</b> análisis automático completado a las {ahora.strftime('%H:%M UTC')}.")
+        dist_res = abs(precio_actual - resistencia) / resistencia
+        dist_sup = abs(precio_actual - soporte) / soporte
 
+        if dist_res <= REPORTE_MARGEN:
+            cercanos_resistencia.append((par, dist_res * 100))
+        if dist_sup <= REPORTE_MARGEN:
+            cercanos_soporte.append((par, dist_sup * 100))
 
-def notificar_reinicio():
-    """Envía una alerta al iniciar o reiniciar el bot."""
-    ahora = datetime.now(timezone.utc)
-    enviar_telegram(
-        f"⚙️ <b>El bot se ha reiniciado y está operativo nuevamente ✅</b>\n"
-        f"⏰ Hora de reinicio: {ahora.strftime('%Y-%m-%d %H:%M UTC')}"
-    )
+    fecha = datetime.now(timezone.utc) - timedelta(hours=5)
+    fecha_local = fecha.strftime("%Y-%m-%d %H:%M")
 
+    mensaje = f"📊 <b>Reporte Diario - {fecha_local}</b>\n"
+
+    if cercanos_resistencia:
+        mensaje += "\n🚀 <b>Cerca de resistencia:</b>\n"
+        for par, dist in cercanos_resistencia:
+            mensaje += f"• {par} → {dist:.2f}% de la resistencia\n"
+    else:
+        mensaje += "\n🚀 Ninguna moneda cerca de resistencia.\n"
+
+    if cercanos_soporte:
+        mensaje += "\n⚡ <b>Cerca de soporte:</b>\n"
+        for par, dist in cercanos_soporte:
+            mensaje += f"• {par} → {dist:.2f}% del soporte\n"
+    else:
+        mensaje += "\n⚡ Ninguna moneda cerca de soporte.\n"
+
+    enviar_telegram(mensaje)
 
 # === LOOP PRINCIPAL ===
 
 if __name__ == "__main__":
-    # Notificación de arranque
-    notificar_reinicio()
-    resumen_enviado_hoy = False
+    enviar_telegram("🤖 Bot de alertas cripto iniciado correctamente ✅")
 
     while True:
         try:
-            ahora_utc = datetime.now(timezone.utc)
-            hora_actual = ahora_utc.strftime("%H:%M")  # Hora UTC
-            hora_resumen = "10:30"  # Equivale a 6:30 AM (UTC-4)
+            hora_local = (datetime.now(timezone.utc) - timedelta(hours=5)).strftime("%H:%M")
 
-            # Enviar resumen diario a la hora definida
-            if hora_actual == hora_resumen and not resumen_enviado_hoy:
-                generar_resumen_diario()
-                resumen_enviado_hoy = True
-                print("📤 Resumen diario enviado correctamente.")
+            # Enviar reporte diario a las 6:30 am (hora local)
+            if hora_local == REPORTE_HORA:
+                generar_reporte_diario()
+                time.sleep(60)  # evitar que se repita en el mismo minuto
 
-            # Reiniciar bandera a medianoche UTC
-            if ahora_utc.strftime("%H:%M") == "00:00":
-                resumen_enviado_hoy = False
-
-            # Analizar monedas
+            # Ciclo normal de análisis
             for par in PAIRS:
                 analizar_moneda(par)
                 time.sleep(3)
 
-            print(f"💓 Bot activo y ejecutándose... {ahora_utc.strftime('%H:%M:%S')} UTC")
+            print(f"💓 Bot activo y ejecutándose... {datetime.utcnow().strftime('%H:%M:%S')} UTC")
             time.sleep(300)
 
         except Exception as e:

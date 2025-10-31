@@ -23,8 +23,9 @@ ALERTA_MARGEN = 0.02
 # Margen para incluir en reporte diario (3%)
 REPORTE_MARGEN = 0.03
 
-# Hora local de reporte diario (6:30 AM Colombia/Venezuela)
-REPORTE_HORA = "06:30"
+# Horarios (hora local Colombia/Venezuela, UTC−5)
+REPORTE_HORA_DIARIA = "06:30"
+REPORTE_HORA_SEMANAL = "08:00"
 
 # === FUNCIONES AUXILIARES ===
 
@@ -93,6 +94,8 @@ def analizar_moneda(par):
             print(f"❌ Error analizando {par}: {e}")
             traceback.print_exc()
 
+# === REPORTES ===
+
 def generar_reporte_diario():
     """Genera un reporte resumen con monedas cercanas a soporte o resistencia."""
     cercanos_resistencia = []
@@ -135,6 +138,28 @@ def generar_reporte_diario():
 
     enviar_telegram(mensaje)
 
+
+def generar_reporte_semanal():
+    """Envía un resumen general del comportamiento semanal."""
+    fecha = datetime.now(timezone.utc) - timedelta(hours=5)
+    fecha_local = fecha.strftime("%Y-%m-%d %H:%M")
+
+    mensaje = f"📅 <b>Reporte Semanal - {fecha_local}</b>\n\n"
+
+    for par in PAIRS:
+        df = obtener_datos_kraken(par)
+        if df is None or len(df) == 0:
+            continue
+
+        cierre_inicial = df["close"].iloc[0]
+        cierre_final = df["close"].iloc[-1]
+        variacion = ((cierre_final - cierre_inicial) / cierre_inicial) * 100
+
+        emoji = "🟢" if variacion > 0 else "🔴" if variacion < 0 else "⚪"
+        mensaje += f"{emoji} {par}: {variacion:.2f}% en la semana\n"
+
+    enviar_telegram(mensaje)
+
 # === LOOP PRINCIPAL ===
 
 if __name__ == "__main__":
@@ -142,12 +167,19 @@ if __name__ == "__main__":
 
     while True:
         try:
-            hora_local = (datetime.now(timezone.utc) - timedelta(hours=5)).strftime("%H:%M")
+            hora_local = (datetime.now(timezone.utc) - timedelta(hours=5))
+            hora_str = hora_local.strftime("%H:%M")
+            dia_semana = hora_local.weekday()  # 0=Lunes, 6=Domingo
 
-            # Enviar reporte diario a las 6:30 am (hora local)
-            if hora_local == REPORTE_HORA:
+            # Enviar reporte diario
+            if hora_str == REPORTE_HORA_DIARIA:
                 generar_reporte_diario()
-                time.sleep(60)  # evitar que se repita en el mismo minuto
+                time.sleep(60)
+
+            # Enviar reporte semanal los domingos
+            if dia_semana == 6 and hora_str == REPORTE_HORA_SEMANAL:
+                generar_reporte_semanal()
+                time.sleep(60)
 
             # Ciclo normal de análisis
             for par in PAIRS:

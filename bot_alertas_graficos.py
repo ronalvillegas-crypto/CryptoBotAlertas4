@@ -1,188 +1,154 @@
 import os
-import time
 import requests
 import pandas as pd
+import time
+import datetime
 import numpy as np
-import traceback
-from datetime import datetime, timezone
+import matplotlib.pyplot as plt
+from io import BytesIO
+import telegram
+from telegram.error import TimedOut
 
-# === CONFIGURACIÓN PRINCIPAL ===
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+# ==============================
+# ⚙️ CONFIGURACIÓN GENERAL
+# ==============================
+TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-PAIRS = [
-    "BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT",
-    "ADA/USDT", "DOGE/USDT", "DOT/USDT", "LTC/USDT", "LINK/USDT"
-]
+bot = telegram.Bot(token=TOKEN)
 
-TIMEFRAMES = {"1h": 60, "4h": 240, "1d": 1440}
-ALERTA_MARGEN = 0.003  # 0.3%
-ULTIMO_RESUMEN = None  # Control de envío diario
+PARES = ["BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT", "ADA/USDT", "DOGE/USDT", "DOT/USDT", "LTC/USDT", "LINK/USDT"]
+INTERVALO = 15  # minutos entre actualizaciones
+TOLERANCIA = 0.01  # 1%
+MOVIMIENTO_MINIMO = 0.01  # 1%
 
-# === FUNCIONES ===
-def enviar_telegram(mensaje):
-    """Envía un mensaje al canal de Telegram configurado"""
+# ==============================
+# 🧩 FUNCIONES DE DATOS
+# ==============================
+
+def obtener_datos(par):
+    """Obtiene datos desde Kraken con fallback a Coinbase o KuCoin."""
+    base, quote = par.split("/")
+    dfs = []
+
+    # Kraken
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        data = {"chat_id": CHAT_ID, "text": mensaje, "parse_mode": "HTML"}
-        requests.post(url, data=data, timeout=10)
+        url = f"https://api.kraken.com/0/public/OHLC?pair={base}{quote}&interval={INTERVALO}"
+        r = requests.get(url, timeout=10)
+        data = r.json()["result"]
+        key = list(data.keys())[0]
+        df = pd.DataFrame(data[key], columns=["time", "open", "high", "low", "close", "v", "v2"])
+        df["close"] = df["close"].astype(float)
+        dfs.append(df)
+        print(f"📊 Datos de {par} obtenidos desde Kraken")
     except Exception as e:
-        print(f"⚠️ Error enviando mensaje a Telegram: {e}")
+        print(f"⚠️ Kraken falló para {par}: {e}")
 
-def obtener_datos(par, intervalo):
-    """Obtiene datos OHLC desde Kraken con fallback a Coinbase o KuCoin"""
-    base, quote = par.split('/')
+    # Coinbase (fallback)
+    if not dfs:
+        try:
+            url = f"https://api.exchange.coinbase.com/products/{base}-{quote}/candles?granularity={INTERVALO*60}"
+            r = requests.get(url, timeout=10)
+            df = pd.DataFrame(r.json(), columns=["time", "low", "high", "open", "close", "volume"])
+            df["close"] = df["close"].astype(float)
+            dfs.append(df)
+            print(f"📊 Datos de {par} obtenidos desde Coinbase")
+        except Exception as e:
+            print(f"⚠️ Coinbase falló para {par}: {e}")
 
-    # === Kraken ===
-    url_kraken = f"https://api.kraken.com/0/public/OHLC?pair={base}{quote}&interval={intervalo}"
-    try:
-        r = requests.get(url_kraken, timeout=10)
-        data = r.json()
-        key = list(data["result"].keys())[0]
-        df = pd.DataFrame(data["result"][key], columns=["time", "open", "high", "low", "close", "v", "v2", "v3"])
-        df["close"] = df["close"].astype(float)
-        df["high"] = df["high"].astype(float)
-        df["low"] = df["low"].astype(float)
-        print(f"📊 Datos obtenidos de Kraken para {par} ({intervalo}m)")
-        return df
-    except Exception:
-        print(f"⚠️ Kraken falló para {par}, intentando Coinbase...")
-        enviar_telegram(f"⚙️ Kraken falló para <b>{par}</b>, intentando datos de <b>Coinbase</b>...")
+    # KuCoin (fallback final)
+    if not dfs:
+        try:
+            url = f"https://api.kucoin.com/api/v1/market/candles?type={INTERVALO}min&symbol={base}-{quote}"
+            r = requests.get(url, timeout=10)
+            df = pd.DataFrame(r.json()["data"], columns=["time", "open", "close", "high", "low", "volume", "turnover"])
+            df["close"] = df["close"].astype(float)
+            dfs.append(df)
+            print(f"📊 Datos de {par} obtenidos desde KuCoin")
+        except Exception as e:
+            print(f"⚠️ KuCoin falló para {par}: {e}")
 
-    # === Coinbase ===
-    try:
-        url_cb = f"https://api.exchange.coinbase.com/products/{base}-{quote}/candles?granularity={intervalo*60}"
-        r = requests.get(url_cb, timeout=10)
-        data = r.json()
-        df = pd.DataFrame(data, columns=["time", "low", "high", "open", "close", "volume"])
-        df["close"] = df["close"].astype(float)
-        df["high"] = df["high"].astype(float)
-        df["low"] = df["low"].astype(float)
-        print(f"📊 Datos obtenidos de Coinbase para {par}")
-        enviar_telegram(f"✅ Usando datos de <b>Coinbase</b> para <b>{par}</b>.")
-        return df
-    except Exception:
-        print(f"⚠️ Coinbase falló para {par}, intentando KuCoin...")
-        enviar_telegram(f"⚙️ Coinbase falló para <b>{par}</b>, intentando datos de <b>KuCoin</b>...")
-
-    # === KuCoin ===
-    try:
-        url_kucoin = f"https://api.kucoin.com/api/v1/market/candles?type={intervalo}min&symbol={base}-{quote}"
-        r = requests.get(url_kucoin, timeout=10)
-        data = r.json()
-        df = pd.DataFrame(data["data"], columns=["time", "open", "close", "high", "low", "volume", "turnover"])
-        df["close"] = df["close"].astype(float)
-        df["high"] = df["high"].astype(float)
-        df["low"] = df["low"].astype(float)
-        print(f"📊 Datos obtenidos de KuCoin para {par}")
-        enviar_telegram(f"✅ Usando datos de <b>KuCoin</b> para <b>{par}</b>.")
-        return df
-    except Exception as e:
-        print(f"❌ No se pudieron obtener datos para {par}: {e}")
-        enviar_telegram(f"❌ No se pudieron obtener datos de <b>{par}</b> en Kraken, Coinbase ni KuCoin.")
+    if not dfs:
         return None
+    return dfs[0]
 
-def calcular_niveles(df):
-    """Calcula soporte y resistencia simples"""
-    maximo = df["high"].max()
-    minimo = df["low"].min()
-    return minimo, maximo
 
-def analizar_moneda(par):
-    """Analiza una moneda en todos los timeframes"""
-    print(f"\n🔄 Analizando {par} ...")
-    resultados = {}
-    for tf, minutos in TIMEFRAMES.items():
-        df = obtener_datos(par, minutos)
-        if df is None or df.empty:
-            print(f"⚠️ Sin datos válidos para {par} en {tf}")
-            continue
+# ==============================
+# 📊 ANÁLISIS TÉCNICO SIMPLE
+# ==============================
+def calcular_soportes_resistencias(df):
+    precios = df["close"].tail(100).values
+    soporte = np.min(precios)
+    resistencia = np.max(precios)
+    return soporte, resistencia
 
-        soporte, resistencia = calcular_niveles(df)
-        precio_actual = df["close"].iloc[-1]
 
-        distancia_sup = abs(precio_actual - resistencia) / resistencia
-        distancia_inf = abs(precio_actual - soporte) / soporte
+# ==============================
+# 🚨 DETECCIÓN DE ALERTAS
+# ==============================
+def verificar_alertas(par, df):
+    precio_actual = df["close"].iloc[-1]
+    soporte, resistencia = calcular_soportes_resistencias(df)
 
-        print(f"🧾 {par} [{tf}] → Precio: {precio_actual:.2f}, Soporte: {soporte:.2f}, Resistencia: {resistencia:.2f}")
+    alerta = None
+    motivo = ""
 
-        if distancia_sup <= ALERTA_MARGEN:
-            estado = "🔴 Cerca de resistencia"
-            enviar_telegram(
-                f"🚀 <b>{par}</b> está cerca de su <b>resistencia</b> ({tf})\n"
-                f"💰 Precio actual: <b>{precio_actual:.2f}</b>\n"
-                f"📈 Nivel de resistencia: <b>{resistencia:.2f}</b>"
-            )
-        elif distancia_inf <= ALERTA_MARGEN:
-            estado = "🟢 Cerca de soporte"
-            enviar_telegram(
-                f"⚡ <b>{par}</b> está cerca de su <b>soporte</b> ({tf})\n"
-                f"💰 Precio actual: <b>{precio_actual:.2f}</b>\n"
-                f"📉 Nivel de soporte: <b>{soporte:.2f}</b>"
-            )
-        else:
-            estado = "⚪ Zona neutral"
+    # Cercanía a soporte o resistencia
+    if abs(precio_actual - soporte) / soporte <= TOLERANCIA:
+        alerta = "🟢 Cerca del soporte"
+        motivo = f"Precio actual {precio_actual:.2f} está a {100*TOLERANCIA:.1f}% del soporte ({soporte:.2f})"
+    elif abs(precio_actual - resistencia) / resistencia <= TOLERANCIA:
+        alerta = "🔴 Cerca de la resistencia"
+        motivo = f"Precio actual {precio_actual:.2f} está a {100*TOLERANCIA:.1f}% de la resistencia ({resistencia:.2f})"
 
-        resultados[tf] = {
-            "precio": precio_actual,
-            "soporte": soporte,
-            "resistencia": resistencia,
-            "estado": estado
-        }
-    return resultados
+    # Movimiento brusco en los últimos 15 minutos
+    if len(df) >= 2:
+        cambio = (precio_actual - df["close"].iloc[-2]) / df["close"].iloc[-2]
+        if abs(cambio) >= MOVIMIENTO_MINIMO:
+            tendencia = "⬆️ Subida fuerte" if cambio > 0 else "⬇️ Caída fuerte"
+            alerta = tendencia
+            motivo = f"Movimiento de {cambio*100:.2f}% en los últimos 15 minutos"
 
-def resumen_diario():
-    """Genera y envía un resumen diario con todos los pares"""
-    resumen = f"📅 <b>Resumen diario – {datetime.now(timezone.utc).strftime('%Y-%m-%d')}</b>\n\n"
-    for par in PAIRS:
-        try:
-            df = obtener_datos(par, 240)  # 4h
-            if df is None or df.empty:
-                continue
+    return alerta, motivo, precio_actual, soporte, resistencia
 
-            soporte, resistencia = calcular_niveles(df)
-            precio_actual = df["close"].iloc[-1]
 
-            distancia_sup = abs(precio_actual - resistencia) / resistencia
-            distancia_inf = abs(precio_actual - soporte) / soporte
+# ==============================
+# 💬 ENVÍO DE MENSAJE TELEGRAM
+# ==============================
+def enviar_alerta(par, alerta, motivo, precio, soporte, resistencia):
+    mensaje = (
+        f"🚨 *Alerta en {par}*\n"
+        f"{alerta}\n"
+        f"💰 Precio: `{precio:.2f}`\n"
+        f"📉 Soporte: `{soporte:.2f}`\n"
+        f"📈 Resistencia: `{resistencia:.2f}`\n"
+        f"🕒 {motivo}\n"
+    )
+    try:
+        bot.send_message(chat_id=CHAT_ID, text=mensaje, parse_mode="Markdown")
+    except TimedOut:
+        time.sleep(5)
+        bot.send_message(chat_id=CHAT_ID, text=mensaje, parse_mode="Markdown")
 
-            if distancia_sup <= ALERTA_MARGEN:
-                estado = f"🔴 Cerca de resistencia ({resistencia:.2f})"
-            elif distancia_inf <= ALERTA_MARGEN:
-                estado = f"🟢 Cerca de soporte ({soporte:.2f})"
-            else:
-                estado = "⚪ Zona neutral"
 
-            resumen += f"{par} → Precio: {precio_actual:.2f} | {estado}\n"
-
-        except Exception as e:
-            resumen += f"{par} → ⚠️ Error al obtener datos ({e})\n"
-
-    enviar_telegram(resumen.strip())
-
-# === LOOP PRINCIPAL ===
-if __name__ == "__main__":
-    enviar_telegram("🤖 Bot de alertas cripto iniciado correctamente ✅")
-
+# ==============================
+# 🔁 LOOP PRINCIPAL
+# ==============================
+def main():
     while True:
-        try:
-            hora_actual = datetime.now(timezone.utc)
-            hora_str = hora_actual.strftime("%H:%M")
+        for par in PARES:
+            print(f"🔄 Analizando {par} ...")
+            df = obtener_datos(par)
+            if df is None:
+                continue
+            alerta, motivo, precio, soporte, resistencia = verificar_alertas(par, df)
+            if alerta:
+                enviar_alerta(par, alerta, motivo, precio, soporte, resistencia)
+        print(f"💓 Bot activo y ejecutándose... {datetime.datetime.now(datetime.UTC).strftime('%H:%M:%S')} UTC")
+        time.sleep(INTERVALO * 60)
 
-            # Enviar resumen diario una sola vez a medianoche UTC
-            if hora_actual.hour == 0 and (ULTIMO_RESUMEN is None or ULTIMO_RESUMEN != hora_actual.date()):
-                resumen_diario()
-                ULTIMO_RESUMEN = hora_actual.date()
 
-            for par in PAIRS:
-                analizar_moneda(par)
-                time.sleep(3)
+if __name__ == "__main__":
+    main()
 
-            print(f"💓 Bot activo y ejecutándose... {hora_str} UTC")
-            time.sleep(300)
-
-        except Exception as e:
-            print(f"⚠️ Error en bucle principal: {e}")
-            traceback.print_exc()
-            time.sleep(60)
 

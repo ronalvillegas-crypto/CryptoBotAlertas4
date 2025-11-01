@@ -3,7 +3,7 @@ import time
 import requests
 import pandas as pd
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 # === CONFIGURACIÓN PRINCIPAL ===
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -20,8 +20,10 @@ ALERTA_MARGEN = 0.003   # 0.3 %
 RESET_MARGEN = 0.01     # 1 %
 VELAS_RECIENTES = 50
 
-# Diccionario para evitar alertas duplicadas
+# --- Control de alertas y fallos ---
 alertas_enviadas = {}
+fallos_pares = {}
+pares_pausados = {}
 
 # === FUNCIONES AUXILIARES ===
 def enviar_telegram(mensaje):
@@ -98,12 +100,20 @@ def calcular_niveles(df):
 
 def analizar_moneda(par):
     """Analiza una moneda en todos los timeframes."""
+    # Verificar si el par está pausado
+    if par in pares_pausados and datetime.now(timezone.utc) < pares_pausados[par]:
+        print(f"⏸️ {par} pausado hasta {pares_pausados[par].strftime('%H:%M:%S')} UTC")
+        return
+
     print(f"🔄 Analizando {par} ...")
+    exito = False
+
     for tf, minutos in TIMEFRAMES.items():
         df = obtener_datos(par, minutos)
         if df is None or df.empty:
             continue
 
+        exito = True
         soporte, resistencia = calcular_niveles(df)
         precio_actual = df["close"].iloc[-1]
 
@@ -119,7 +129,6 @@ def analizar_moneda(par):
                 f"🚀 <b>{par}</b> tocando resistencia ({tf})\n"
                 f"📈 Resistencia: <b>{resistencia:.2f}</b>\n💰 Precio actual: {precio_actual:.2f}"
             )
-            enviar_telegram(f"✅ Alerta de resistencia enviada para {par} ({tf})")
             alertas_enviadas[clave_res] = True
 
         # --- ALERTA DE SOPORTE ---
@@ -128,18 +137,28 @@ def analizar_moneda(par):
                 f"⚡ <b>{par}</b> tocando soporte ({tf})\n"
                 f"📉 Soporte: <b>{soporte:.2f}</b>\n💰 Precio actual: {precio_actual:.2f}"
             )
-            enviar_telegram(f"✅ Alerta de soporte enviada para {par} ({tf})")
             alertas_enviadas[clave_sup] = True
 
-        # --- RESETEAR ALERTAS SI SE ALEJA ---
+        # --- RESET ALERTAS SI SE ALEJA ---
         if alertas_enviadas.get(clave_res) and distancia_sup > RESET_MARGEN:
             alertas_enviadas[clave_res] = False
         if alertas_enviadas.get(clave_sup) and distancia_inf > RESET_MARGEN:
             alertas_enviadas[clave_sup] = False
 
+    # --- GESTIÓN DE FALLOS ---
+    if not exito:
+        fallos_pares[par] = fallos_pares.get(par, 0) + 1
+        print(f"⚠️ Fallo #{fallos_pares[par]} para {par}")
+        if fallos_pares[par] >= 3:
+            pares_pausados[par] = datetime.now(timezone.utc) + timedelta(minutes=30)
+            enviar_telegram(f"⏸️ <b>{par}</b> pausado 30 minutos por fallos consecutivos.")
+            fallos_pares[par] = 0
+    else:
+        fallos_pares[par] = 0  # reiniciar contador
+
 # === LOOP PRINCIPAL ===
 if __name__ == "__main__":
-    enviar_telegram("🤖 Bot de alertas cripto iniciado correctamente ✅")
+    enviar_telegram("🤖 Bot de alertas cripto con control de errores iniciado ✅")
 
     while True:
         try:
@@ -160,6 +179,7 @@ if __name__ == "__main__":
             print(f"⚠️ Error en bucle principal: {e}")
             traceback.print_exc()
             time.sleep(60)
+
 
 
 

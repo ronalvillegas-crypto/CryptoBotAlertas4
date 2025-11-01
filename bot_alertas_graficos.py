@@ -4,6 +4,7 @@ import requests
 import pandas as pd
 import traceback
 from datetime import datetime, timezone, timedelta
+from threading import Thread
 
 # === CONFIGURACIÓN PRINCIPAL ===
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -24,6 +25,8 @@ VELAS_RECIENTES = 50
 alertas_enviadas = {}
 fallos_pares = {}
 pares_pausados = {}
+ultima_fecha_reporte = None
+ultimo_mensaje_id = None
 
 # === FUNCIONES AUXILIARES ===
 def enviar_telegram(mensaje):
@@ -76,7 +79,6 @@ def obtener_datos_coinbase(par, intervalo):
             return None
         df = pd.DataFrame(data, columns=["time","low","high","open","close","volume"])
         df[["close","high","low"]] = df[["close","high","low"]].astype(float)
-        # convertir USD → USDT
         df[["close","high","low"]] = df[["close","high","low"]] / USDT_USD
         return df
     except Exception:
@@ -132,56 +134,105 @@ def analizar_moneda(par):
         soporte, resistencia = calcular_niveles(df)
         precio_actual = df["close"].iloc[-1]
 
-        distancia_sup = abs(precio_actual - resistencia) / resistencia
-        distancia_inf = abs(precio_actual - soporte) / soporte
+        distancia_sup = (resistencia - precio_actual) / resistencia * 100
+        distancia_inf = (precio_actual - soporte) / soporte * 100
 
         clave_res = f"{par}_{tf}_resistencia"
         clave_sup = f"{par}_{tf}_soporte"
 
-        # --- ALERTA DE RESISTENCIA ---
-        if distancia_sup <= ALERTA_MARGEN and not alertas_enviadas.get(clave_res):
-            enviar_telegram(
-                f"🚀 <b>{par}</b> tocando resistencia ({tf})\n"
-                f"📈 Resistencia: <b>{resistencia:.2f}</b>\n💰 Precio actual: {precio_actual:.2f}"
-            )
+        # --- ALERTAS ---
+        if abs(distancia_sup) <= ALERTA_MARGEN * 100 and not alertas_enviadas.get(clave_res):
+            enviar_telegram(f"🚀 <b>{par}</b> tocando resistencia ({tf})\n📈 {resistencia:.2f} | 💰 {precio_actual:.2f}")
             alertas_enviadas[clave_res] = True
 
-        # --- ALERTA DE SOPORTE ---
-        if distancia_inf <= ALERTA_MARGEN and not alertas_enviadas.get(clave_sup):
-            enviar_telegram(
-                f"⚡ <b>{par}</b> tocando soporte ({tf})\n"
-                f"📉 Soporte: <b>{soporte:.2f}</b>\n💰 Precio actual: {precio_actual:.2f}"
-            )
+        if abs(distancia_inf) <= ALERTA_MARGEN * 100 and not alertas_enviadas.get(clave_sup):
+            enviar_telegram(f"⚡ <b>{par}</b> tocando soporte ({tf})\n📉 {soporte:.2f} | 💰 {precio_actual:.2f}")
             alertas_enviadas[clave_sup] = True
 
-        # --- RESET ALERTAS SI SE ALEJA ---
-        if alertas_enviadas.get(clave_res) and distancia_sup > RESET_MARGEN:
+        if alertas_enviadas.get(clave_res) and abs(distancia_sup) > RESET_MARGEN * 100:
             alertas_enviadas[clave_res] = False
-        if alertas_enviadas.get(clave_sup) and distancia_inf > RESET_MARGEN:
+        if alertas_enviadas.get(clave_sup) and abs(distancia_inf) > RESET_MARGEN * 100:
             alertas_enviadas[clave_sup] = False
 
     # --- GESTIÓN DE FALLOS ---
     if not exito:
         fallos_pares[par] = fallos_pares.get(par, 0) + 1
-        print(f"⚠️ Fallo #{fallos_pares[par]} para {par}")
         if fallos_pares[par] >= 3:
             pares_pausados[par] = datetime.now(timezone.utc) + timedelta(minutes=30)
             enviar_telegram(f"⏸️ <b>{par}</b> pausado 30 minutos por fallos consecutivos.")
             fallos_pares[par] = 0
     else:
-        fallos_pares[par] = 0  # reiniciar contador
+        fallos_pares[par] = 0
+
+def generar_reporte(tf="1h"):
+    """Genera texto con soportes, resistencias y distancias en el timeframe seleccionado."""
+    minutos = TIMEFRAMES.get(tf, 60)
+    mensaje = f"📊 <b>REPORTE DE SOPORTES Y RESISTENCIAS ({tf})</b>\n\n"
+    for par in PAIRS:
+        try:
+            df = obtener_datos(par, minutos)
+            if df is None or df.empty:
+                continue
+            soporte, resistencia = calcular_niveles(df)
+            precio_actual = df["close"].iloc[-1]
+
+            distancia_sup = (resistencia - precio_actual) / resistencia * 100
+            distancia_inf = (precio_actual - soporte) / soporte * 100
+
+            mensaje += (
+                f"💎 <b>{par}</b>\n"
+                f"📉 Soporte: {soporte:.2f}\n"
+                f"📈 Resistencia: {resistencia:.2f}\n"
+                f"💰 Precio: {precio_actual:.2f}\n"
+                f"📊 Distancia al soporte: {distancia_inf:.2f}%\n"
+                f"📊 Distancia a resistencia: {distancia_sup:.2f}%\n\n"
+            )
+        except:
+            continue
+    return mensaje.strip()
+
+def enviar_reporte_diario():
+    """Envía el reporte diario a las 06:30 UTC."""
+    global ultima_fecha_reporte
+    ahora = datetime.now(timezone.utc)
+    if ultima_fecha_reporte == ahora.date():
+        return
+    if ahora.strftime("%H:%M") == "06:30":
+        enviar_telegram(generar_reporte("1h"))
+        ultima_fecha_reporte = ahora.date()
+
+# === ESCUCHA DE COMANDOS TELEGRAM ===
+def escuchar_comandos():
+    """Escucha comandos manuales enviados al bot."""
+    global ultimo_mensaje_id
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
+    while True:
+        try:
+            r = requests.get(url, timeout=20)
+            data = r.json()
+            if "result" in data and len(data["result"]) > 0:
+                mensaje = data["result"][-1]
+                msg_id = mensaje["update_id"]
+                if msg_id != ultimo_mensaje_id:
+                    ultimo_mensaje_id = msg_id
+                    texto = mensaje["message"].get("text", "").strip().lower()
+                    if texto.startswith("/reporte"):
+                        partes = texto.split()
+                        tf = partes[1] if len(partes) > 1 and partes[1] in TIMEFRAMES else "1h"
+                        enviar_telegram(generar_reporte(tf))
+            time.sleep(5)
+        except:
+            time.sleep(10)
 
 # === LOOP PRINCIPAL ===
 if __name__ == "__main__":
-    enviar_telegram("🤖 Bot de alertas cripto con precios corregidos y control de errores iniciado ✅")
+    enviar_telegram("🤖 Bot cripto con alertas + comando /reporte (1h, 4h, 1d) ✅")
+
+    Thread(target=escuchar_comandos, daemon=True).start()
 
     while True:
         try:
-            hora_actual = datetime.now(timezone.utc).strftime("%H:%M")
-            if hora_actual == "00:00":
-                enviar_telegram(
-                    f"⚙️ Bot reiniciado correctamente ✅\n⏰ {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
-                )
+            enviar_reporte_diario()
 
             for par in PAIRS:
                 analizar_moneda(par)

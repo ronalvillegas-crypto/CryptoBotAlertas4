@@ -35,6 +35,18 @@ def enviar_telegram(mensaje):
     except Exception as e:
         print(f"⚠️ Error enviando mensaje a Telegram: {e}")
 
+def obtener_usdt_usd():
+    """Obtiene el precio actual USDT/USD (≈ 1) para ajustar conversiones."""
+    try:
+        r = requests.get("https://api.kraken.com/0/public/Ticker?pair=USDTUSD", timeout=10)
+        data = r.json()
+        precio = float(list(data["result"].values())[0]["c"][0])
+        return precio
+    except Exception:
+        return 1.0  # fallback
+
+USDT_USD = obtener_usdt_usd()
+
 # === FUENTES DE DATOS ===
 def obtener_datos_kraken(par, intervalo):
     base, quote = par.split('/')
@@ -53,9 +65,10 @@ def obtener_datos_kraken(par, intervalo):
         return None
 
 def obtener_datos_coinbase(par, intervalo):
+    """Coinbase trabaja en USD, se convierte a USDT automáticamente."""
     base, quote = par.split('/')
     granularity = intervalo * 60
-    url = f"https://api.exchange.coinbase.com/products/{base}-{quote}/candles?granularity={granularity}"
+    url = f"https://api.exchange.coinbase.com/products/{base}-USD/candles?granularity={granularity}"
     try:
         r = requests.get(url, timeout=15)
         data = r.json()
@@ -63,11 +76,14 @@ def obtener_datos_coinbase(par, intervalo):
             return None
         df = pd.DataFrame(data, columns=["time","low","high","open","close","volume"])
         df[["close","high","low"]] = df[["close","high","low"]].astype(float)
+        # convertir USD → USDT
+        df[["close","high","low"]] = df[["close","high","low"]] / USDT_USD
         return df
     except Exception:
         return None
 
 def obtener_datos_kucoin(par, intervalo):
+    """KuCoin devuelve datos en USDT directamente."""
     base, quote = par.split('/')
     ku_interval = {60: "1hour", 240: "4hour", 1440: "1day"}.get(intervalo, "1hour")
     url = f"https://api.kucoin.com/api/v1/market/candles?type={ku_interval}&symbol={base}-{quote}"
@@ -100,7 +116,6 @@ def calcular_niveles(df):
 
 def analizar_moneda(par):
     """Analiza una moneda en todos los timeframes."""
-    # Verificar si el par está pausado
     if par in pares_pausados and datetime.now(timezone.utc) < pares_pausados[par]:
         print(f"⏸️ {par} pausado hasta {pares_pausados[par].strftime('%H:%M:%S')} UTC")
         return
@@ -158,7 +173,7 @@ def analizar_moneda(par):
 
 # === LOOP PRINCIPAL ===
 if __name__ == "__main__":
-    enviar_telegram("🤖 Bot de alertas cripto con control de errores iniciado ✅")
+    enviar_telegram("🤖 Bot de alertas cripto con precios corregidos y control de errores iniciado ✅")
 
     while True:
         try:
